@@ -22,6 +22,7 @@ from jp_gene_viz import spoke_layout
 from jp_gene_viz import simple_tree
 from jp_gene_viz import cluster_layout
 from jp_gene_viz import category_layout
+from jp_gene_viz import getData
 import fnmatch
 import igraph
 import json
@@ -66,6 +67,7 @@ BROKEN_LAYOUTS = set([
 ])
 
 OUTLINE_LABEL_STYLE = {
+    "font-style": "italic",
     "text-anchor": "middle",
     "stroke": "white",
     "font-weight": "bold",
@@ -73,6 +75,7 @@ OUTLINE_LABEL_STYLE = {
 }
 
 NO_OUTLINE_LABEL_STYLE = {
+    "font-style": "italic",
     "text-anchor": "middle",
     "font-weight": "bold",
 }
@@ -176,6 +179,7 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         self.layout_button = self.make_button("layout", self.layout_click)
         self.expand_button = self.make_button("expand", self.expand_click)
         self.regulates_button = self.make_button("regulates", self.regulates_click)
+        self.regulates_edges_button = self.make_button("reg edges", self.regulates_edges_click)
         self.targeted_button = self.make_button("targeted by", self.targeted_click)
         self.focus_button = self.make_button("focus", self.focus_click)
         self.restore_button = self.make_button("restore", self.restore_click)
@@ -246,6 +250,7 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
                    self.trim_button,
                    self.expand_button,
                    self.regulates_button,
+                   self.regulates_edges_button,
                    self.targeted_button,
                    self.tf_only_button,
                    self.split_button,
@@ -510,6 +515,15 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         traitlets.directional_link((chooser, "file_path"), (fn, "value"))
         chooser.show()
 
+    def get_network_container(self):
+        choice = self.container_dropdown.value
+        if choice == SVG:
+            return self.svg
+        elif choice == CANVAS:
+            return self.canvas
+        else:
+            raise ValueError("invalid container choice " + repr(choice))
+
     def snapshot_click(self, b=None):
         from jp_svg_canvas import fake_svg
         self.info_area.value = "snapshot click"
@@ -524,7 +538,8 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         mime_type = "image/" + format
         svg = self.svg
         dimension = self.image_side_slider.value
-        fsvg = fake_svg.FakeCanvasWidget(svg.viewBox, filename, mime_type, dimension)
+        container = self.get_network_container()
+        fsvg = fake_svg.FakeCanvasWidget(container.viewBox, filename, mime_type, dimension)
         self.draw(fit=False, svg=fsvg)
         preview = self.preview_checkbox.value
         # XXXX for debugging!!!
@@ -647,6 +662,16 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
             self.info_area.value = "Computing default layout: " + repr(graph.sizes())
             fit = self.fit_heuristic(graph)
             positions = dLayout.group_layout(graph, fit=fit)
+        else:
+            # match names ignoring case
+            nodes = list(graph.node_weights.keys())
+            lcmap = getData.lower_case_map(graph.node_weights.keys())
+            fix = {}
+            for name in positions:
+                location = positions[name]
+                fix_name = lcmap.get(name.lower(), name)
+                fix[fix_name] = location
+            positions = fix
         self.data_positions = positions
         #self.display_positions = positions.copy()
         self.set_layout(positions.copy())
@@ -655,9 +680,10 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         self.override_node_colors = None
         self.override_node_weights = None
         ew = graph.edge_weights
-        maxw = max(abs(ew[e]) for e in ew) + 1.0
-        self.threshhold_slider.max = maxw
-        self.do_threshhold()
+        if ew:
+            maxw = max(abs(ew[e]) for e in ew) + 1.0
+            self.threshhold_slider.max = maxw
+            self.do_threshhold()
         self.reset_interactive_bookkeeping()
         if draw:
             self.draw()
@@ -762,10 +788,12 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         if not patterns:
             self.info_area.value = "No patterns to match."
             return
-        nodes = self.data_graph.node_weights.keys()
-        selected_nodes = set()
+        nodes = list(self.data_graph.node_weights.keys())
+        lowernodes = [s.lower() for s in nodes]
+        selected_nodes_lower = set()
         for pattern in patterns:
-            selected_nodes.update(fnmatch.filter(nodes, pattern))
+            selected_nodes_lower.update(fnmatch.filter(lowernodes, pattern))
+        selected_nodes = getData.caseless_intersection_list(nodes, selected_nodes_lower)
         #print ("found", len(selected_nodes), "of", len(nodes))
         (Gfocus, Pfocus) = self.select_nodes(selected_nodes,
             self.data_graph, self.data_positions)
@@ -883,10 +911,13 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
             #self.svg.empty()
 
     def regulates_click(self, b=None):
+        return self.expand_click(b, incoming=False, outgoing=True, crosslink=True)
+
+    def regulates_edges_click(self, b=None):
         return self.expand_click(b, incoming=False, outgoing=True, crosslink=False)
 
     def targeted_click(self, b=None):
-        return self.expand_click(b, incoming=True, outgoing=False, crosslink=False)
+        return self.expand_click(b, incoming=True, outgoing=False, crosslink=True)
 
     def expand_click(self, b, incoming=True, outgoing=True, crosslink=True):
         "Add nodes for incoming or outgoing edges from current nodes."
@@ -932,8 +963,9 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         for n in nodes:
             if n not in dP and n in P:
                 dP[n] = P[n]
+        if crosslink:
+            self.do_threshhold()
         self.set_node_weights()
-        self.do_threshhold()
         #self.svg.empty()
         self.draw()
 
@@ -1033,9 +1065,16 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
         "Get nodes list for currently viewable nodes."
         return sorted(self.display_graph.node_weights.keys())
 
+    def get_data_nodes(self, matching_nodes=None):
+        dnodes = set(self.data_graph.node_weights.keys())
+        if matching_nodes is None:
+            return sorted(dnodes)
+        else:
+            return getData.caseless_intersection_list(matching_nodes, dnodes, use_left=False)
+
     def select_nodes(self, nodes, from_graph, from_positions):
         "Get network restricted to nodes list and positions for nodes."
-        nodes = set(nodes)
+        nodes = set(self.get_data_nodes(nodes))
         if self.display_graph is None:
             Gfocus = dGraph.WGraph()
         else:
@@ -1061,11 +1100,14 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
 
     def restrict_edges(self, edge_restriction):
         "Show only nodes and edges listed in edge_restriction."
+        # adjust name cases to match local conventions
+        lcmap = getData.lower_case_map(self.get_data_nodes())
+        edge_restriction = set((lcmap.get(a.lower(), a), lcmap.get(b.lower(), b)) for (a,b) in edge_restriction)
         dG = self.display_graph
         edge_weights = dG.edge_weights
         node_weights = dG.node_weights
         current_edges = set(edge_weights.keys())
-        keep_edges = set(edge_restriction) & current_edges
+        keep_edges = edge_restriction & current_edges
         keep_nodes = set([x[0] for x in keep_edges] +
             [x[1] for x in keep_edges])
         dG.edge_weights = dict((e, edge_weights[e])
@@ -1456,7 +1498,6 @@ class NetworkDisplay(traitlets.HasTraits, JsonMixin):
 
 def display_network(filename, N=None, threshhold=20.0, save_layout=True, show=True, size_limit=2000):
     from jp_gene_viz import dLayout
-    from jp_gene_viz import getData
     assert os.path.exists(filename)
     print ("Reading network", filename)
     G = getData.read_network(filename)
@@ -1472,7 +1513,8 @@ def display_network(filename, N=None, threshhold=20.0, save_layout=True, show=Tr
             layout = dLayout.group_layout(G)
         else:
             print ("Using fast layout because the network is large.")
-            layout = grid_forest.forest_layout(G)
+            (layout, rectangles) = grid_forest.forest_layout(G)
+            assert type(layout) is dict, type(layout)
         if save_layout:
             print ("Saving layout", layoutpath)
             dLayout.dump(layout, layoutpath)

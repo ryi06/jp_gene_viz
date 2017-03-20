@@ -1,4 +1,4 @@
-import HMap
+from jp_gene_viz import HMap
 import pprint
 import ipywidgets as widgets
 from IPython.display import display
@@ -6,10 +6,11 @@ from jp_svg_canvas import canvas
 from jp_gene_viz.widget_utils import set_visibility, is_visible
 import traitlets
 import fnmatch
-import color_scale
-import color_widget
+from jp_gene_viz import color_scale
+from jp_gene_viz import color_widget
+from jp_gene_viz import getData
 from jp_svg_canvas.canvas import load_javascript_support
-from . import array_transforms
+from jp_gene_viz import array_transforms
 
 NO_TRANSFORM = "no transform"
 LOG2_TRANSFORM = 'log 2 fold change'
@@ -72,12 +73,16 @@ class ExpressionDisplay(traitlets.HasTraits):
         self.display_data(rows, cols, side_length)
 
     def display_data(self, rows, cols, side_length=None):
+        (data_rows, data_cols, data) = self.data_heat_map.get_data()
         if side_length is None:
             side_length = self.side_length
         if rows is not None:
+            rows = getData.caseless_intersection_list(rows, data_rows, use_left=False)
             self.rows = rows
         else:
             rows = self.rows
+        if cols is not None:
+            cols = getData.caseless_intersection_list(cols, data_cols, use_left=False)
         heat_map = self.display_heat_map = self.data_heat_map.projection(rows, cols)
         (self.dx, self.dy) = heat_map.fit(self.svg, side_length, self.labels_space)
         self.row = self.col = None
@@ -89,7 +94,7 @@ class ExpressionDisplay(traitlets.HasTraits):
         return (rows, data)
 
     def select_rows(self, rows=None):
-        return self.display_data(rows, self.data_heat_map.col_names[:200])
+        return self.display_data(rows, self.display_heat_map.col_names[:200])
 
     def column_weights(self):
         if self.col is None:
@@ -119,11 +124,14 @@ class ExpressionDisplay(traitlets.HasTraits):
         d = self.draw_button = widgets.Button(description="draw", width="50px")
         d.layout.width = "50px"
         d.on_click(self.draw_click)
+        l = self.list_conditions_button = widgets.Button(description="list", width="50px")
+        l.layout.width = "50px"
+        l.on_click(self.list_conditions_click)
         c = self.color_checkbox = widgets.Checkbox(description="colors", value=False)
         c.on_trait_change(self.colors_click, "value")
         cl = self.cluster_checkbox = widgets.Checkbox(description="cluster", value=True)
         cl.on_trait_change(self.colors_click, "value")
-        assembly = widgets.HBox(children=[b, t, d, c, cl])
+        assembly = widgets.HBox(children=[b, t, l, d, c, cl])
         return assembly
 
     def make_genes_assembly(self, transform_dropdown):
@@ -135,7 +143,10 @@ class ExpressionDisplay(traitlets.HasTraits):
         r = self.reset_button = widgets.Button(description="reset")
         r.layout.width = "50px"
         r.on_click(self.reset_click)
-        assembly = widgets.HBox(children=[b, t, r, transform_dropdown])
+        l = self.list_genes_button = widgets.Button(description="list")
+        l.layout.width = "50px"
+        l.on_click(self.list_genes_click)
+        assembly = widgets.HBox(children=[b, t, l, r, transform_dropdown])
         return assembly
 
     def reset_click(self, b=None):
@@ -157,10 +168,18 @@ class ExpressionDisplay(traitlets.HasTraits):
     def draw_click(self, b=None):
         self.draw()
 
+    def list_conditions_click(self, b=None):
+        conditions = self.display_heat_map.col_names
+        self.info_area.value = "\t".join(conditions)
+
+    def list_genes_click(self, b=None):
+        genes = self.display_heat_map.row_names
+        self.info_area.value = "\t".join(genes)
+
     def genes_click(self, b=None):
-        patterns = self.genes_text.value.lower().split()
+        patterns = [x.lower() for x in self.genes_text.value.lower().split()]
         row_set = set()
-        rows = self.data_heat_map.row_names
+        rows = [x.lower() for x in self.data_heat_map.row_names]
         for pattern in patterns:
             row_set.update(fnmatch.filter(rows, pattern))
         if not row_set:
@@ -171,9 +190,9 @@ class ExpressionDisplay(traitlets.HasTraits):
             self.display_data(rows, columns)
 
     def match_click(self, b=None):
-        patterns = self.match_text.value.split()
+        patterns = [x.lower() for x in self.match_text.value.split()]
         column_set = set()
-        columns = self.data_heat_map.col_names
+        columns = [x.lower() for x in self.data_heat_map.col_names]
         for pattern in patterns:
             column_set.update(fnmatch.filter(columns, pattern))
         if not column_set:
